@@ -2,7 +2,11 @@ package com.bpareja.pomodorotec.pomodoro
 
 import android.app.Application
 import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.CountDownTimer
 import androidx.core.app.ActivityCompat
@@ -13,6 +17,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.bpareja.pomodorotec.MainActivity
 import com.bpareja.pomodorotec.PomodoroReceiver
+import com.bpareja.pomodorotec.PomodoroWidgetProvider
 import com.bpareja.pomodorotec.R
 
 enum class Phase {
@@ -31,6 +36,8 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
         }
     }
     private val context = getApplication<Application>().applicationContext
+    private val sharedPreferences: SharedPreferences =
+        context.getSharedPreferences("pomodoro_prefs", Context.MODE_PRIVATE)
 
     private val _timeLeft = MutableLiveData("25:00")
     val timeLeft: LiveData<String> = _timeLeft
@@ -43,7 +50,7 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
 
     private var countDownTimer: CountDownTimer? = null
     private var timeRemainingInMillis: Long = 25 * 60 * 1000L // Tiempo inicial para FOCUS
-
+    private var timerRunning = false
     // Función para iniciar la sesión de concentración
     fun startFocusSession() {
         countDownTimer?.cancel() // Cancela cualquier temporizador en ejecución
@@ -74,6 +81,12 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
                 val minutes = (millisUntilFinished / 1000) / 60
                 val seconds = (millisUntilFinished / 1000) % 60
                 _timeLeft.value = String.format("%02d:%02d", minutes, seconds)
+
+                // Guardar los datos en SharedPreferences para el widget
+                saveWidgetData()
+
+                // Actualizar el widget
+                updateAllWidgets()
             }
 
             override fun onFinish() {
@@ -86,7 +99,15 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
         }.start()
     }
 
-
+    private fun updateAllWidgets() {
+        val appWidgetManager = AppWidgetManager.getInstance(context)
+        val appWidgetIds = appWidgetManager.getAppWidgetIds(
+            ComponentName(context, PomodoroWidgetProvider::class.java)
+        )
+        for (appWidgetId in appWidgetIds) {
+            PomodoroWidgetProvider.updateWidget(context, appWidgetManager, appWidgetId)
+        }
+    }
     // Pausa el temporizador
     fun pauseTimer() {
         countDownTimer?.cancel()
@@ -144,5 +165,41 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
             }
             notify(MainActivity.NOTIFICATION_ID, builder.build())
         }
+    }
+    private fun togglePhase() {
+        _currentPhase.value = if (_currentPhase.value == Phase.FOCUS) {
+            Phase.BREAK
+        } else {
+            Phase.FOCUS
+        }
+    }
+
+    private fun updateTimeLeft() {
+        val minutes = timeRemainingInMillis / 1000 / 60
+        val seconds = (timeRemainingInMillis / 1000) % 60
+        _timeLeft.value = String.format("%02d:%02d", minutes, seconds)
+    }
+    private fun saveWidgetData() {
+        sharedPreferences.edit()
+            .putString("phase", _currentPhase.value.toString())
+            .putString("timeLeft", _timeLeft.value)
+            .putInt("progress", calculateProgress())
+            .apply()
+    }
+
+    private fun calculateProgress(): Int {
+        val totalMillis = if (_currentPhase.value == Phase.FOCUS) {
+            25 * 60 * 1000
+        } else {
+            5 * 60 * 1000
+        }
+        return ((totalMillis - timeRemainingInMillis) * 100 / totalMillis).toInt()
+    }
+
+    fun loadWidgetData() {
+        _currentPhase.value = Phase.valueOf(
+            sharedPreferences.getString("phase", Phase.FOCUS.toString()) ?: Phase.FOCUS.toString()
+        )
+        _timeLeft.value = sharedPreferences.getString("timeLeft", "25:00") ?: "25:00"
     }
 }

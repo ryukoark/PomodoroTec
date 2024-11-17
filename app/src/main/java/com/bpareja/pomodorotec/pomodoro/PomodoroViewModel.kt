@@ -2,9 +2,12 @@ package com.bpareja.pomodorotec.pomodoro
 
 import android.app.Application
 import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
-import android.media.RingtoneManager
 import android.os.CountDownTimer
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -13,6 +16,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.bpareja.pomodorotec.MainActivity
+import com.bpareja.pomodorotec.PomodoroReceiver
+import com.bpareja.pomodorotec.PomodoroWidgetProvider
 import com.bpareja.pomodorotec.R
 
 enum class Phase {
@@ -27,11 +32,12 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
     companion object {
         private var instance: PomodoroViewModel? = null
         fun skipBreak() {
-            instance?.startFocusSession()  // Saltar el descanso y comenzar sesión de concentración
+            instance?.startFocusSession()
         }
     }
-
     private val context = getApplication<Application>().applicationContext
+    private val sharedPreferences: SharedPreferences =
+        context.getSharedPreferences("pomodoro_prefs", Context.MODE_PRIVATE)
 
     private val _timeLeft = MutableLiveData("25:00")
     val timeLeft: LiveData<String> = _timeLeft
@@ -42,19 +48,15 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
     private val _currentPhase = MutableLiveData(Phase.FOCUS)
     val currentPhase: LiveData<Phase> = _currentPhase
 
-    private val _isSkipBreakButtonVisible = MutableLiveData(false)
-    val isSkipBreakButtonVisible: LiveData<Boolean> = _isSkipBreakButtonVisible
-
     private var countDownTimer: CountDownTimer? = null
     private var timeRemainingInMillis: Long = 25 * 60 * 1000L // Tiempo inicial para FOCUS
-
+    private var timerRunning = false
     // Función para iniciar la sesión de concentración
     fun startFocusSession() {
         countDownTimer?.cancel() // Cancela cualquier temporizador en ejecución
         _currentPhase.value = Phase.FOCUS
-        timeRemainingInMillis = 25 * 60 * 1000L // Restablece el tiempo de enfoque a 25 minutos
-        _timeLeft.value = "25:00"
-        _isSkipBreakButtonVisible.value = false // Ocultar el botón si estaba visible
+        timeRemainingInMillis = 25 * 60 * 1000L // el tiempo esta configurado en 15 segundos
+        _timeLeft.value = "00:04" // Valor inicial de texto en pantalla (solo para prueba)
         showNotification("Inicio de Concentración", "La sesión de concentración ha comenzado.")
         startTimer() // Inicia el temporizador con el tiempo de enfoque actualizado
     }
@@ -64,7 +66,6 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
         _currentPhase.value = Phase.BREAK
         timeRemainingInMillis = 5 * 60 * 1000L // 5 minutos para descanso
         _timeLeft.value = "05:00"
-        _isSkipBreakButtonVisible.value = true // Mostrar el botón durante el descanso
         showNotification("Inicio de Descanso", "La sesión de descanso ha comenzado.")
         startTimer()
     }
@@ -80,6 +81,12 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
                 val minutes = (millisUntilFinished / 1000) / 60
                 val seconds = (millisUntilFinished / 1000) % 60
                 _timeLeft.value = String.format("%02d:%02d", minutes, seconds)
+
+                // Guardar los datos en SharedPreferences para el widget
+                saveWidgetData()
+
+                // Actualizar el widget
+                updateAllWidgets()
             }
 
             override fun onFinish() {
@@ -92,6 +99,15 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
         }.start()
     }
 
+    private fun updateAllWidgets() {
+        val appWidgetManager = AppWidgetManager.getInstance(context)
+        val appWidgetIds = appWidgetManager.getAppWidgetIds(
+            ComponentName(context, PomodoroWidgetProvider::class.java)
+        )
+        for (appWidgetId in appWidgetIds) {
+            PomodoroWidgetProvider.updateWidget(context, appWidgetManager, appWidgetId)
+        }
+    }
     // Pausa el temporizador
     fun pauseTimer() {
         countDownTimer?.cancel()
@@ -105,31 +121,39 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
         _currentPhase.value = Phase.FOCUS
         timeRemainingInMillis = 25 * 60 * 1000L // Restablece a 25 minutos
         _timeLeft.value = "25:00"
-        _isSkipBreakButtonVisible.value = false // Ocultar el botón al restablecer
     }
 
-    // Muestra la notificación personalizada
+    // Muestra la notificación
     private fun showNotification(title: String, message: String) {
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT // Reabrir la actividad si ya está en el stack
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
         val pendingIntent: PendingIntent = PendingIntent.getActivity(
             context, 0, intent, PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Color para la notificación según la fase (rojo para concentración, verde para descanso)
-        val notificationColor = if (_currentPhase.value == Phase.FOCUS) 0xFFFF0000.toInt() else 0xFF00FF00.toInt()
-        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) // Sonido predeterminado
+        // Intent para el botón "Saltar descanso"
+        val skipBreakIntent = Intent(context, PomodoroReceiver::class.java).apply {
+            action = "SKIP_BREAK"
+        }
+        val skipBreakPendingIntent: PendingIntent = PendingIntent.getBroadcast(
+            context, 0, skipBreakIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val builder = NotificationCompat.Builder(context, MainActivity.CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground) // Ícono personalizado
+            .setSmallIcon(R.drawable.pomodoro)
             .setContentTitle(title)
             .setContentText(message)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setContentIntent(pendingIntent)  // Usar el PendingIntent configurado
+            .setContentIntent(pendingIntent)
             .setAutoCancel(true)
-            .setColor(notificationColor) // Color de la notificación
-            .setSound(soundUri) // Sonido para la notificación
+
+        // Solo mostrar el botón "Saltar descanso" si está en el estado de descanso
+        if (_currentPhase.value == Phase.BREAK) {
+            builder.addAction(
+                R.drawable.ic_skip, "Saltar descanso", skipBreakPendingIntent
+            )
+        }
 
         with(NotificationManagerCompat.from(context)) {
             if (ActivityCompat.checkSelfPermission(
@@ -141,5 +165,41 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
             }
             notify(MainActivity.NOTIFICATION_ID, builder.build())
         }
+    }
+    private fun togglePhase() {
+        _currentPhase.value = if (_currentPhase.value == Phase.FOCUS) {
+            Phase.BREAK
+        } else {
+            Phase.FOCUS
+        }
+    }
+
+    private fun updateTimeLeft() {
+        val minutes = timeRemainingInMillis / 1000 / 60
+        val seconds = (timeRemainingInMillis / 1000) % 60
+        _timeLeft.value = String.format("%02d:%02d", minutes, seconds)
+    }
+    private fun saveWidgetData() {
+        sharedPreferences.edit()
+            .putString("phase", _currentPhase.value.toString())
+            .putString("timeLeft", _timeLeft.value)
+            .putInt("progress", calculateProgress())
+            .apply()
+    }
+
+    private fun calculateProgress(): Int {
+        val totalMillis = if (_currentPhase.value == Phase.FOCUS) {
+            25 * 60 * 1000
+        } else {
+            5 * 60 * 1000
+        }
+        return ((totalMillis - timeRemainingInMillis) * 100 / totalMillis).toInt()
+    }
+
+    fun loadWidgetData() {
+        _currentPhase.value = Phase.valueOf(
+            sharedPreferences.getString("phase", Phase.FOCUS.toString()) ?: Phase.FOCUS.toString()
+        )
+        _timeLeft.value = sharedPreferences.getString("timeLeft", "25:00") ?: "25:00"
     }
 }

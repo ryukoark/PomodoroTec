@@ -55,7 +55,7 @@ class PomodoroViewModel(application: Application) : AndroidViewModel(application
     fun startFocusSession() {
         countDownTimer?.cancel() // Cancela cualquier temporizador en ejecución
         _currentPhase.value = Phase.FOCUS
-        timeRemainingInMillis = 1 * 15 * 1000L // el tiempo esta configurado en 15 segundos
+        timeRemainingInMillis = 25 * 60 * 1000L // el tiempo esta configurado en 15 segundos
         _timeLeft.value = "00:04" // Valor inicial de texto en pantalla (solo para prueba)
         showNotification("Inicio de Concentración", "La sesión de concentración ha comenzado.")
         startTimer() // Inicia el temporizador con el tiempo de enfoque actualizado
